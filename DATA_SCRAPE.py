@@ -54,9 +54,46 @@ def login_to_website(driver):
     time.sleep(5)
     print("[DEBUG] Login successful.")
 
+
+
+
+
+def adjust_datepicker(driver):
+    try:
+        # Use the provided XPath to click the calendar icon/input for the start date
+        calendar_icon = WebDriverWait(driver, 30).until(
+            EC.element_to_be_clickable((By.XPATH, "/html/body/app-root/app-dashboard-layout/div[2]/mat-sidenav-container/mat-sidenav-content/div/app-sales-products/div/form/mat-form-field[1]/div/div[1]/div[4]"))
+        )
+        calendar_icon.click()
+        print("[DEBUG] Calendar icon clicked.")
+
+        # Click the "previous month" button six times
+        for i in range(6):
+            prev_button = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'mat-calendar-previous-button')]"))
+            )
+            prev_button.click()
+            print(f"[DEBUG] Clicked previous month button {i + 1} time(s).")
+            time.sleep(1)  # Allow the calendar to update after each click
+
+        # Now that we've navigated 6 months back, click "day 1"
+        day_one = WebDriverWait(driver, 30).until(
+    EC.element_to_be_clickable((By.XPATH,
+       "//div[contains(@class, 'mat-calendar-body-cell-content') and normalize-space(text())='1']"))
+)
+        day_one.click()
+        print("[DEBUG] Day '1' selected in datepicker.")
+
+        print("[DEBUG] Datepicker adjusted successfully.")
+    except Exception as e:
+        print(f"[ERROR] Failed to adjust datepicker: {e}")
+
 def download_excel_report(driver):
     print("[DEBUG] Navigating to reports page...")
     driver.get(REPORTS_URL)
+
+    # Adjust the datepicker before downloading the report
+    adjust_datepicker(driver)
 
     try:
         WebDriverWait(driver, 30).until(
@@ -67,7 +104,7 @@ def download_excel_report(driver):
         print(f"[ERROR] Failed to click download button: {e}")
         return
 
-    time.sleep(10)  # Allow file download
+    time.sleep(60)  # Allow file download
 
     for _ in range(30):
         matching_files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "raport shitjes*.xlsx"))
