@@ -104,7 +104,7 @@ def download_excel_report(driver):
         print(f"[ERROR] Failed to click download button: {e}")
         return
 
-    time.sleep(60)  # Allow file download
+    time.sleep(150)  # Allow file download
 
     for _ in range(30):
         matching_files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "raport shitjes*.xlsx"))
