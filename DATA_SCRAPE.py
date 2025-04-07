@@ -58,42 +58,13 @@ def login_to_website(driver):
 
 
 
-def adjust_datepicker(driver):
-    try:
-        # Use the provided XPath to click the calendar icon/input for the start date
-        calendar_icon = WebDriverWait(driver, 30).until(
-            EC.element_to_be_clickable((By.XPATH, "/html/body/app-root/app-dashboard-layout/div[2]/mat-sidenav-container/mat-sidenav-content/div/app-sales-products/div/form/mat-form-field[1]/div/div[1]/div[4]"))
-        )
-        calendar_icon.click()
-        print("[DEBUG] Calendar icon clicked.")
 
-        # Click the "previous month" button six times
-        for i in range(6):
-            prev_button = WebDriverWait(driver, 30).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'mat-calendar-previous-button')]"))
-            )
-            prev_button.click()
-            print(f"[DEBUG] Clicked previous month button {i + 1} time(s).")
-            time.sleep(1)  # Allow the calendar to update after each click
-
-        # Now that we've navigated 6 months back, click "day 1"
-        day_one = WebDriverWait(driver, 30).until(
-    EC.element_to_be_clickable((By.XPATH,
-       "//div[contains(@class, 'mat-calendar-body-cell-content') and normalize-space(text())='1']"))
-)
-        day_one.click()
-        print("[DEBUG] Day '1' selected in datepicker.")
-
-        print("[DEBUG] Datepicker adjusted successfully.")
-    except Exception as e:
-        print(f"[ERROR] Failed to adjust datepicker: {e}")
 
 def download_excel_report(driver):
     print("[DEBUG] Navigating to reports page...")
     driver.get(REPORTS_URL)
 
-    # Adjust the datepicker before downloading the report
-    adjust_datepicker(driver)
+
 
     try:
         WebDriverWait(driver, 30).until(
@@ -207,18 +178,58 @@ def import_data_to_database():
         print(f"[ERROR] Failed to load CSV: {e}")
         return
 
-    # Convert 'Datetime' to proper datetime or set to None
+    # Convert 'Datetime' to proper datetime and drop invalid rows
     df['Datetime'] = pd.to_datetime(df['Datetime'], errors='coerce')
     df.dropna(subset=["Datetime"], inplace=True)
-
 
     try:
         conn = connect(DATABASE_URL, sslmode="require")
         cursor = conn.cursor()
 
-        cursor.execute('TRUNCATE TABLE "sales";')
-        print("[DEBUG] Existing records cleared.")
+        # Retrieve the latest datetime from the sales table
+        cursor.execute('SELECT MAX("Datetime") FROM sales;')
+        result = cursor.fetchone()
+        max_datetime = result[0] if result and result[0] is not None else None
 
+        # If there is a latest datetime, also retrieve the highest order_id for that datetime.
+        max_order_id = None
+        if max_datetime:
+            cursor.execute('SELECT MAX("Order_ID") FROM sales WHERE "Datetime" = %s;', (max_datetime,))
+            result = cursor.fetchone()
+            max_order_id = result[0] if result and result[0] is not None else None
+
+        print(f"[DEBUG] Latest record in DB has Datetime: {max_datetime} and Order_ID: {max_order_id}")
+
+        # Define a function for filtering new records based on datetime and order id
+        def is_new_record(row):
+            # If there's no record in the DB, all rows are new
+            if not max_datetime:
+                return True
+            # If row's datetime is later than the latest in DB, it's new
+            if row['Datetime'] > max_datetime:
+                return True
+            # If row's datetime equals the latest, check order id (assuming numeric order IDs)
+            if row['Datetime'] == max_datetime:
+                # If no max_order_id exists, then treat the record as new
+                if not max_order_id:
+                    return True
+                try:
+                    # Convert both to numbers (if applicable)
+                    return float(row['Order_ID']) > float(max_order_id)
+                except ValueError:
+                    # If conversion fails, fall back to string comparison
+                    return str(row['Order_ID']) > str(max_order_id)
+            return False
+
+        # Filter the DataFrame for new records
+        new_df = df[df.apply(is_new_record, axis=1)]
+        print(f"[DEBUG] {len(new_df)} new rows found to insert.")
+
+        if new_df.empty:
+            print("[DEBUG] No new records to insert.")
+            return
+
+        # Prepare records for insertion
         records = [
             (
                 row['Order_ID'],
@@ -231,9 +242,10 @@ def import_data_to_database():
                 row['Datetime'],
                 row['Seller Category']
             )
-            for index, row in df.iterrows()
+            for index, row in new_df.iterrows()
         ]
 
+        # Insert new records into the database
         execute_values(cursor, """
             INSERT INTO "sales" ("Order_ID", "Seller", "Article_Name", "Category", "Quantity",
                                  "Article_Price", "Total_Article_Price", "Datetime", "Seller Category")
@@ -241,7 +253,7 @@ def import_data_to_database():
         """, records)
 
         conn.commit()
-        print("[DEBUG] Data inserted into the database.")
+        print("[DEBUG] New data inserted into the database.")
     except Exception as e:
         print(f"[ERROR] Database operation failed: {e}")
     finally:
