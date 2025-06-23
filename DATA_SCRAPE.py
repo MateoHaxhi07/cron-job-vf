@@ -35,239 +35,176 @@ def setup_driver():
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.page_load_strategy = "eager"
-
     driver = webdriver.Chrome(options=chrome_options)
-    print("[DEBUG] Chrome driver initialized successfully.")
+    print("[DEBUG] Chrome driver initialized.")
     return driver
 
+
 def login_to_website(driver):
-    print("[DEBUG] Logging into the website...")
+    print("[DEBUG] Logging in…")
     driver.get(LOGIN_URL)
     WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.NAME, 'nipt'))).send_keys(NIPT)
     WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.NAME, 'username'))).send_keys(USERNAME)
-    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, '//input[@formcontrolname="password"]'))).send_keys(PASSWORD)
+    WebDriverWait(driver, 30).until(
+        EC.element_to_be_clickable((By.XPATH, '//input[@formcontrolname="password"]'))
+    ).send_keys(PASSWORD)
     driver.find_element(By.XPATH, "//button[contains(., 'Login')]").click()
     time.sleep(5)
-    print("[DEBUG] Login successful.")
-
-
-
-
-
+    print("[DEBUG] Login complete.")
 
 
 def download_excel_report(driver):
-    print("[DEBUG] Navigating to reports page...")
+    print("[DEBUG] Navigating to reports page…")
     driver.get(REPORTS_URL)
-
-
-
     try:
         WebDriverWait(driver, 30).until(
             EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Shkarko raportin')]"))
         ).click()
-        print("[DEBUG] Download button clicked.")
+        print("[DEBUG] Clicked download.")
     except Exception as e:
-        print(f"[ERROR] Failed to click download button: {e}")
+        print(f"[ERROR] Click failed: {e}")
         return
 
-    time.sleep(150)  # Allow file download
-
-    for _ in range(30):
-        matching_files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "raport shitjes*.xlsx"))
-        if matching_files and not matching_files[0].endswith(".crdownload"):
-            file_path = matching_files[0]
-            new_file_path = os.path.join(DOWNLOAD_FOLDER, "sales_data.xlsx")
-            try:
-                os.replace(file_path, new_file_path)
-                print(f"[DEBUG] File saved as: {new_file_path}")
-                format_excel_file(new_file_path)
-                break
-            except Exception as e:
-                print(f"[ERROR] Failed to rename file: {e}")
-                time.sleep(2)
-        time.sleep(1)
+    for i in range(60):
+        files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "raport shitjes*.xlsx"))
+        if files and not files[0].endswith(".crdownload"):
+            src = files[0]
+            dst = os.path.join(DOWNLOAD_FOLDER, "sales_data.xlsx")
+            os.replace(src, dst)
+            print(f"[DEBUG] Downloaded file → {dst}")
+            format_excel_file(dst)
+            return
+        time.sleep(2)
+        print(f"[DEBUG] Waiting for file… {i+1}/60")
+    print("[ERROR] Download timed out.")
 
 
 def format_excel_file(file_path):
-    print(f"[DEBUG] Processing file: {file_path}")
+    print(f"[DEBUG] Reading Excel: {file_path}")
     df = pd.read_excel(file_path)
-    
-    # Replace all "-" characters in the DataFrame
-    df = df.replace("-", "", regex=True)
-    
-    # Delete unnecessary columns
-    columns_to_delete = [0, 2, 5, 7, 8,  12, 13, 15, 16, 18, 20, 21, 23, 24, 25]
-    df.drop(df.columns[columns_to_delete], axis=1, inplace=True)
-    
-    # Convert the date column using the provided format
-    df['Data Rregjistrimit'] = pd.to_datetime(
-        df['Data Rregjistrimit'], format='%d/%m/%Y', errors='coerce'
-    )
-    
-    # Helper function to process the time column:
-    def process_time(x):
-        x_str = str(x).strip()
-        # If the string contains "days", extract the actual time part
-        if "days" in x_str:
-            parts = x_str.split(" ")
-            if len(parts) >= 3:
-                return parts[2]
-        return x_str
 
-    # Apply the helper function to clean up the time values
-    df['Koha Rregjistrimit'] = df['Koha Rregjistrimit'].astype(str).apply(process_time)
-    
-    # Combine the formatted date and cleaned time into a single Datetime column
+    # 1) Inspect raw
+    print("[DEBUG] Raw columns:", df.columns.tolist())
+    print("[DEBUG] Raw sample row:", df.iloc[0].to_dict() if len(df) else "EMPTY DF")
+
+    # 2) Drop unwanted (keep buyer cols)
+    cols_before = df.columns.tolist()
+    drop_idxs = [0, 2, 5, 7, 8, 12, 13, 15, 16, 18, 20, 21, 23, 24, 25]
+    df.drop(df.columns[drop_idxs], axis=1, inplace=True)
+
+
+    # 3) Date + time processing
+    df['Data Rregjistrimit'] = pd.to_datetime(df['Data Rregjistrimit'], format='%d/%m/%Y', errors='coerce')
+    df['Koha Rregjistrimit'] = df['Koha Rregjistrimit'].astype(str).apply(
+        lambda x: x.split(" ")[2] if "days" in x else x
+    )
     df['Datetime'] = pd.to_datetime(
         df['Data Rregjistrimit'].dt.strftime('%Y-%m-%d') + ' ' + df['Koha Rregjistrimit'],
         errors='coerce'
     )
-    
-    # Remove the now redundant individual date and time columns
-    df.drop(['Data Rregjistrimit', 'Koha Rregjistrimit'], axis=1, inplace=True)
-    
-    # Rename remaining columns as needed
-    df.rename(columns={
-    df.columns[0]:  'Order_ID',
-    df.columns[1]:  'Seller',
-    df.columns[2]:  'Buyer_Name',
-    df.columns[3]:  'Buyer_NIPT',
-    df.columns[4]:  'Article_Name',
-    df.columns[5]:  'Category',
-    df.columns[6]:  'Quantity',
-    df.columns[7]:  'Article_Price',
-    df.columns[8]:  'Total_Article_Price',
-    df.columns[9]:  'Datetime'
-}, inplace=True)
-    
-    # Map sellers to categories
-    seller_categories = {
-        'Enisa': 'Delivery',
-        'Dea': 'Delivery',
-        'Kristian Llupo': 'Bar',
-        'Pranvera Xherahi': 'Bar',
-        'Fjorelo Arapi': 'Restaurant',
-        'Jonel Demba': 'Restaurant'
-    }
-    df['Seller Category'] = df['Seller'].map(seller_categories)
-    
-    # Remove rows where Seller is "TOTALI"
-    df = df[df['Seller'] != 'TOTALI']
-    
-    # Save the processed file as a CSV
-    csv_path = os.path.splitext(file_path)[0] + '.csv'
-    df.to_csv(csv_path, index=False)
 
-    
-    print(f"[DEBUG] File formatted and saved as CSV at: {csv_path}")
+    # 4) Drop old date/time
+    df.drop(['Data Rregjistrimit','Koha Rregjistrimit'], axis=1, inplace=True)
+
+
+
+    # 5) Rename all remaining 10 cols
+    mapping = {
+        0: 'Order_ID', 1: 'Seller',
+        2: 'Buyer_Name', 3: 'Buyer_NIPT',
+        4: 'Article_Name', 5: 'Category',
+        6: 'Quantity', 7: 'Article_Price',
+        8: 'Total_Article_Price', 9: 'Datetime'
+    }
+    df.rename(columns={df.columns[i]: name for i,name in mapping.items()}, inplace=True)
+    print("[DEBUG] After rename cols:", df.columns.tolist())
+
+    # 6) Check buyer data presence
+    print("[DEBUG] Buyer_Name null count:", df['Buyer_Name'].isna().sum(),
+          "/", len(df))
+    print("[DEBUG] Buyer_NIPT null count:", df['Buyer_NIPT'].isna().sum(),
+          "/", len(df))
+
+    # 7) Map seller categories & filter TOTALI
+    seller_map = {
+        'Enisa':'Delivery','Dea':'Delivery',
+        'Kristian Llupo':'Bar','Pranvera Xherahi':'Bar',
+        'Fjorelo Arapi':'Restaurant','Jonel Demba':'Restaurant'
+    }
+    df['Seller Category'] = df['Seller'].map(seller_map)
+    df = df[df['Seller']!='TOTALI']
+
+    # 8) Save CSV & show sample
+    csv_path = file_path.replace('.xlsx','.csv')
+    df.to_csv(csv_path, index=False)
+    print(f"[DEBUG] Formatted CSV: {csv_path}")
+    print("[DEBUG] CSV sample row:", df[['Buyer_Name','Buyer_NIPT']].head().to_dict(orient='records'))
+
 
 def import_data_to_database():
-    print("[DEBUG] Starting database import...")
-    file_path = os.path.join(DOWNLOAD_FOLDER, "sales_data.csv")
-    if not os.path.exists(file_path):
-        print(f"[ERROR] CSV file not found: {file_path}")
+    print("[DEBUG] Importing to DB…")
+    csv_path = os.path.join(DOWNLOAD_FOLDER, "sales_data.csv")
+    if not os.path.exists(csv_path):
+        print("[ERROR] CSV missing:", csv_path)
         return
 
-    try:
-        df = pd.read_csv(file_path)
-        print(f"[DEBUG] CSV loaded with {len(df)} rows.")
-    except Exception as e:
-        print(f"[ERROR] Failed to load CSV: {e}")
-        return
-
-    # Convert 'Datetime' to proper datetime and drop invalid rows
+    df = pd.read_csv(csv_path)
     df['Datetime'] = pd.to_datetime(df['Datetime'], errors='coerce')
     df.dropna(subset=["Datetime"], inplace=True)
 
-    try:
-        conn = connect(DATABASE_URL, sslmode="require")
-        cursor = conn.cursor()
+    conn = connect(DATABASE_URL, sslmode="require")
+    cur  = conn.cursor()
+    cur.execute('SELECT MAX("Datetime") FROM sales;')
+    max_dt = cur.fetchone()[0]
+    max_id = None
+    if max_dt:
+        cur.execute('SELECT MAX("Order_ID") FROM sales WHERE "Datetime"=%s;', (max_dt,))
+        max_id = cur.fetchone()[0]
+    print(f"[DEBUG] DB latest: datetime={max_dt}, order_id={max_id}")
 
-        # Retrieve the latest datetime from the sales table
-        cursor.execute('SELECT MAX("Datetime") FROM sales;')
-        result = cursor.fetchone()
-        max_datetime = result[0] if result and result[0] is not None else None
+    def is_new(r):
+        if not max_dt: return True
+        if r['Datetime']>max_dt: return True
+        if r['Datetime']==max_dt:
+            if not max_id: return True
+            try: return float(r['Order_ID'])>float(max_id)
+            except: return str(r['Order_ID'])>str(max_id)
+        return False
 
-        # If there is a latest datetime, also retrieve the highest order_id for that datetime.
-        max_order_id = None
-        if max_datetime:
-            cursor.execute('SELECT MAX("Order_ID") FROM sales WHERE "Datetime" = %s;', (max_datetime,))
-            result = cursor.fetchone()
-            max_order_id = result[0] if result and result[0] is not None else None
+    new_df = df[df.apply(is_new, axis=1)]
+    print("[DEBUG] New rows found:", len(new_df))
+    print("[DEBUG] New rows sample:", new_df[['Order_ID','Buyer_Name','Buyer_NIPT']].head().to_dict(orient='records'))
 
-        print(f"[DEBUG] Latest record in DB has Datetime: {max_datetime} and Order_ID: {max_order_id}")
-
-        # Define a function for filtering new records based on datetime and order id
-        def is_new_record(row):
-            # If there's no record in the DB, all rows are new
-            if not max_datetime:
-                return True
-            # If row's datetime is later than the latest in DB, it's new
-            if row['Datetime'] > max_datetime:
-                return True
-            # If row's datetime equals the latest, check order id (assuming numeric order IDs)
-            if row['Datetime'] == max_datetime:
-                # If no max_order_id exists, then treat the record as new
-                if not max_order_id:
-                    return True
-                try:
-                    # Convert both to numbers (if applicable)
-                    return float(row['Order_ID']) > float(max_order_id)
-                except ValueError:
-                    # If conversion fails, fall back to string comparison
-                    return str(row['Order_ID']) > str(max_order_id)
-            return False
-
-        # Filter the DataFrame for new records
-        new_df = df[df.apply(is_new_record, axis=1)]
-        print(f"[DEBUG] {len(new_df)} new rows found to insert.")
-
-        if new_df.empty:
-            print("[DEBUG] No new records to insert.")
-            return
-
-        # Prepare records for insertion
+    if len(new_df):
         records = [
             (
-        row['Order_ID'],
-        row['Seller'],
-        row['Buyer_Name'],      # new!
-        row['Buyer_NIPT'],      # new!
-        row['Article_Name'],
-        row['Category'],
-        float(row['Quantity']),
-        float(row['Article_Price']),
-        float(row['Total_Article_Price']),
-        row['Datetime'],
-        row['Seller Category']
-    )
-            for index, row in new_df.iterrows()
+                r['Order_ID'], r['Seller'], 
+                r['Article_Name'], r['Category'], float(r['Quantity']),
+                float(r['Article_Price']), float(r['Total_Article_Price']),
+                r['Datetime'], r['Seller Category'], r['Buyer_Name'],r['Buyer_NIPT']
+            ) for _,r in new_df.iterrows()
         ]
-
-        # Insert new records into the database
-        execute_values(cursor, """
-            INSERT INTO "sales" ("Order_ID", "Seller", "Buyer_Name","Buyer_NIPT","Article_Name", "Category", "Quantity",
-                                 "Article_Price", "Total_Article_Price", "Datetime", "Seller Category")
+        execute_values(cur, """
+            INSERT INTO sales
+              ("Order_ID","Seller",
+               "Article_Name","Category","Quantity",
+               "Article_Price","Total_Article_Price","Datetime","Seller Category","Buyer_Name","Buyer_NIPT")
             VALUES %s
         """, records)
-
         conn.commit()
-        print("[DEBUG] New data inserted into the database.")
-    except Exception as e:
-        print(f"[ERROR] Database operation failed: {e}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
-            print("[DEBUG] Database connection closed.")
+        print("[DEBUG] Inserted to DB.")
+    else:
+        print("[DEBUG] No new data to insert.")
+
+    cur.close()
+    conn.close()
+    print("[DEBUG] DB connection closed.")
 
 
 def main():
+    print("[DEBUG] Script start.")
     driver = setup_driver()
     try:
         login_to_website(driver)
@@ -275,6 +212,13 @@ def main():
         import_data_to_database()
     finally:
         driver.quit()
+        print("[DEBUG] Driver closed.")
+    print("[DEBUG] Script end.")
+
+
+if __name__ == "__main__":
+    main()
+
 
 if __name__ == "__main__":
     print("[DEBUG] Starting script execution...")
