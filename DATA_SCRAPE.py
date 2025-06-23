@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
 import os
 import time
 import glob
+import tempfile
 import pandas as pd
 from datetime import datetime
 from selenium import webdriver
@@ -11,20 +13,35 @@ from psycopg2 import connect
 from psycopg2.extras import execute_values
 
 # ---------------- CONSTANTS ----------------
-LOGIN_URL = 'https://hospitality.devpos.al/login'
-REPORTS_URL = 'https://hospitality.devpos.al/user/0/produktet/shitjet'
-NIPT = "K31412026L"
-USERNAME = "Elona"
-PASSWORD = "Sindi2364*"
+LOGIN_URL       = 'https://hospitality.devpos.al/login'
+REPORTS_URL     = 'https://hospitality.devpos.al/user/0/produktet/shitjet'
+NIPT            = "K31412026L"
+USERNAME        = "Elona"
+PASSWORD        = "Sindi2364*"
 DOWNLOAD_FOLDER = "/app/data"
-DATABASE_URL = "postgresql://restaurant_db_mg7q_user:d9Zslmf92niOQETVqJaTb2n1Rxg0niYg@dpg-cumpfg8gph6c7387r200-a.frankfurt-postgres.render.com/restaurant_db_mg7q"
+DATABASE_URL    = (
+    "postgresql://restaurant_db_mg7q_user:"
+    "d9Zslmf92niOQETVqJaTb2n1Rxg0niYg"
+    "@dpg-cumpfg8gph6c7387r200-a.frankfurt-postgres.render.com/"
+    "restaurant_db_mg7q"
+)
 
+# ensure download folder exists
 if not os.path.exists(DOWNLOAD_FOLDER):
-    os.makedirs(DOWNLOAD_FOLDER)
+    os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
 
 def setup_driver():
+    """
+    Initialize headless Chrome with:
+      - download prefs
+      - headless & stability flags
+      - a unique user-data-dir per run to avoid “already in use” errors
+    """
     print("[DEBUG] Setting up Chrome driver...")
     chrome_options = webdriver.ChromeOptions()
+
+    # 1) Download preferences
     prefs = {
         "download.default_directory": DOWNLOAD_FOLDER,
         "download.prompt_for_download": False,
@@ -32,13 +49,23 @@ def setup_driver():
         "plugins.always_open_pdf_externally": True
     }
     chrome_options.add_experimental_option("prefs", prefs)
+
+    # 2) Headless & stability flags
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920x1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--no-sandbox")             # helps in Docker/cron
+    chrome_options.add_argument("--disable-dev-shm-usage")  # avoids shared memory issues
+
+    # 3) Unique Chrome profile folder
+    user_data_dir = tempfile.mkdtemp(prefix="chrome-profile-")
+    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+
     chrome_options.page_load_strategy = "eager"
+
     driver = webdriver.Chrome(options=chrome_options)
-    print("[DEBUG] Chrome driver initialized.")
+    print(f"[DEBUG] Chrome driver initialized (profile: {user_data_dir})")
     return driver
 
 
@@ -67,6 +94,7 @@ def download_excel_report(driver):
         print(f"[ERROR] Click failed: {e}")
         return
 
+    # wait up to 60*2s = 120s for download to finish
     for i in range(60):
         files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "raport shitjes*.xlsx"))
         if files and not files[0].endswith(".crdownload"):
@@ -85,17 +113,15 @@ def format_excel_file(file_path):
     print(f"[DEBUG] Reading Excel: {file_path}")
     df = pd.read_excel(file_path)
 
-    # 1) Inspect raw
+    # 1) Inspect raw columns & sample
     print("[DEBUG] Raw columns:", df.columns.tolist())
-    print("[DEBUG] Raw sample row:", df.iloc[0].to_dict() if len(df) else "EMPTY DF")
+    print("[DEBUG] Raw sample row:", df.iloc[0].to_dict() if not df.empty else "EMPTY DF")
 
-    # 2) Drop unwanted (keep buyer cols)
-    cols_before = df.columns.tolist()
+    # 2) Drop unwanted columns by index
     drop_idxs = [0, 2, 5, 7, 8, 12, 13, 15, 16, 18, 20, 21, 23, 24, 25]
     df.drop(df.columns[drop_idxs], axis=1, inplace=True)
 
-
-    # 3) Date + time processing
+    # 3) Parse date + time into a single Datetime column
     df['Data Rregjistrimit'] = pd.to_datetime(df['Data Rregjistrimit'], format='%d/%m/%Y', errors='coerce')
     df['Koha Rregjistrimit'] = df['Koha Rregjistrimit'].astype(str).apply(
         lambda x: x.split(" ")[2] if "days" in x else x
@@ -105,12 +131,10 @@ def format_excel_file(file_path):
         errors='coerce'
     )
 
-    # 4) Drop old date/time
-    df.drop(['Data Rregjistrimit','Koha Rregjistrimit'], axis=1, inplace=True)
+    # 4) Drop the old date/time columns
+    df.drop(['Data Rregjistrimit', 'Koha Rregjistrimit'], axis=1, inplace=True)
 
-
-
-    # 5) Rename all remaining 10 cols
+    # 5) Rename the remaining columns
     mapping = {
         0: 'Order_ID', 1: 'Seller',
         2: 'Buyer_Name', 3: 'Buyer_NIPT',
@@ -118,29 +142,27 @@ def format_excel_file(file_path):
         6: 'Quantity', 7: 'Article_Price',
         8: 'Total_Article_Price', 9: 'Datetime'
     }
-    df.rename(columns={df.columns[i]: name for i,name in mapping.items()}, inplace=True)
+    df.rename(columns={df.columns[i]: name for i, name in mapping.items()}, inplace=True)
     print("[DEBUG] After rename cols:", df.columns.tolist())
 
-    # 6) Check buyer data presence
-    print("[DEBUG] Buyer_Name null count:", df['Buyer_Name'].isna().sum(),
-          "/", len(df))
-    print("[DEBUG] Buyer_NIPT null count:", df['Buyer_NIPT'].isna().sum(),
-          "/", len(df))
+    # 6) Log missing buyer info
+    print("[DEBUG] Buyer_Name null count:", df['Buyer_Name'].isna().sum(), "/", len(df))
+    print("[DEBUG] Buyer_NIPT null count:", df['Buyer_NIPT'].isna().sum(), "/", len(df))
 
-    # 7) Map seller categories & filter TOTALI
+    # 7) Map seller categories & filter out totals
     seller_map = {
-        'Enisa':'Delivery','Dea':'Delivery',
-        'Kristian Llupo':'Bar','Pranvera Xherahi':'Bar',
-        'Fjorelo Arapi':'Restaurant','Jonel Demba':'Restaurant'
+        'Enisa': 'Delivery', 'Dea': 'Delivery',
+        'Kristian Llupo': 'Bar', 'Pranvera Xherahi': 'Bar',
+        'Fjorelo Arapi': 'Restaurant', 'Jonel Demba': 'Restaurant'
     }
     df['Seller Category'] = df['Seller'].map(seller_map)
-    df = df[df['Seller']!='TOTALI']
+    df = df[df['Seller'] != 'TOTALI']
 
-    # 8) Save CSV & show sample
-    csv_path = file_path.replace('.xlsx','.csv')
+    # 8) Save to CSV
+    csv_path = file_path.replace('.xlsx', '.csv')
     df.to_csv(csv_path, index=False)
     print(f"[DEBUG] Formatted CSV: {csv_path}")
-    print("[DEBUG] CSV sample row:", df[['Buyer_Name','Buyer_NIPT']].head().to_dict(orient='records'))
+    print("[DEBUG] CSV sample row:", df[['Buyer_Name', 'Buyer_NIPT']].head().to_dict(orient='records'))
 
 
 def import_data_to_database():
@@ -156,6 +178,8 @@ def import_data_to_database():
 
     conn = connect(DATABASE_URL, sslmode="require")
     cur  = conn.cursor()
+
+    # find latest inserted datetime and order_id
     cur.execute('SELECT MAX("Datetime") FROM sales;')
     max_dt = cur.fetchone()[0]
     max_id = None
@@ -164,33 +188,36 @@ def import_data_to_database():
         max_id = cur.fetchone()[0]
     print(f"[DEBUG] DB latest: datetime={max_dt}, order_id={max_id}")
 
+    # filter only new rows
     def is_new(r):
         if not max_dt: return True
-        if r['Datetime']>max_dt: return True
-        if r['Datetime']==max_dt:
+        if r['Datetime'] > max_dt: return True
+        if r['Datetime'] == max_dt:
             if not max_id: return True
-            try: return float(r['Order_ID'])>float(max_id)
-            except: return str(r['Order_ID'])>str(max_id)
+            try:
+                return float(r['Order_ID']) > float(max_id)
+            except:
+                return str(r['Order_ID']) > str(max_id)
         return False
 
     new_df = df[df.apply(is_new, axis=1)]
     print("[DEBUG] New rows found:", len(new_df))
-    print("[DEBUG] New rows sample:", new_df[['Order_ID','Buyer_Name','Buyer_NIPT']].head().to_dict(orient='records'))
-
-    if len(new_df):
+    if not new_df.empty:
         records = [
             (
-                r['Order_ID'], r['Seller'], 
+                r['Order_ID'], r['Seller'],
                 r['Article_Name'], r['Category'], float(r['Quantity']),
                 float(r['Article_Price']), float(r['Total_Article_Price']),
-                r['Datetime'], r['Seller Category'], r['Buyer_Name'],r['Buyer_NIPT']
-            ) for _,r in new_df.iterrows()
+                r['Datetime'], r['Seller Category'],
+                r['Buyer_Name'], r['Buyer_NIPT']
+            ) for _, r in new_df.iterrows()
         ]
         execute_values(cur, """
             INSERT INTO sales
               ("Order_ID","Seller",
                "Article_Name","Category","Quantity",
-               "Article_Price","Total_Article_Price","Datetime","Seller Category","Buyer_Name","Buyer_NIPT")
+               "Article_Price","Total_Article_Price","Datetime",
+               "Seller Category","Buyer_Name","Buyer_NIPT")
             VALUES %s
         """, records)
         conn.commit()
@@ -214,10 +241,6 @@ def main():
         driver.quit()
         print("[DEBUG] Driver closed.")
     print("[DEBUG] Script end.")
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
