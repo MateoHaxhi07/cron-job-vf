@@ -101,7 +101,7 @@ def format_excel_file(file_path):
     df = df.replace("-", "", regex=True)
     
     # Delete unnecessary columns
-    columns_to_delete = [0, 2, 5, 7, 8, 9, 10, 12, 13, 15, 16, 18, 20, 21, 23, 24, 25]
+    columns_to_delete = [0, 2, 5, 7, 8,  12, 13, 15, 16, 18, 20, 21, 23, 24, 25]
     df.drop(df.columns[columns_to_delete], axis=1, inplace=True)
     
     # Convert the date column using the provided format
@@ -133,15 +133,17 @@ def format_excel_file(file_path):
     
     # Rename remaining columns as needed
     df.rename(columns={
-        df.columns[0]: 'Order_ID',
-        df.columns[1]: 'Seller',
-        df.columns[2]: 'Article_Name',
-        df.columns[3]: 'Category',
-        df.columns[4]: 'Quantity',
-        df.columns[5]: 'Article_Price',
-        df.columns[6]: 'Total_Article_Price',
-        df.columns[7]: 'Datetime'
-    }, inplace=True)
+    df.columns[0]:  'Order_ID',
+    df.columns[1]:  'Seller',
+    df.columns[2]:  'Buyer_Name',
+    df.columns[3]:  'Buyer_NIPT',
+    df.columns[4]:  'Article_Name',
+    df.columns[5]:  'Category',
+    df.columns[6]:  'Quantity',
+    df.columns[7]:  'Article_Price',
+    df.columns[8]:  'Total_Article_Price',
+    df.columns[9]:  'Datetime'
+}, inplace=True)
     
     # Map sellers to categories
     seller_categories = {
@@ -232,22 +234,24 @@ def import_data_to_database():
         # Prepare records for insertion
         records = [
             (
-                row['Order_ID'],
-                row['Seller'],
-                row['Article_Name'],
-                row['Category'],
-                float(row['Quantity']),
-                float(row['Article_Price']),
-                float(row['Total_Article_Price']),
-                row['Datetime'],
-                row['Seller Category']
-            )
+        row['Order_ID'],
+        row['Seller'],
+        row['Buyer_Name'],      # new!
+        row['Buyer_NIPT'],      # new!
+        row['Article_Name'],
+        row['Category'],
+        float(row['Quantity']),
+        float(row['Article_Price']),
+        float(row['Total_Article_Price']),
+        row['Datetime'],
+        row['Seller Category']
+    )
             for index, row in new_df.iterrows()
         ]
 
         # Insert new records into the database
         execute_values(cursor, """
-            INSERT INTO "sales" ("Order_ID", "Seller", "Article_Name", "Category", "Quantity",
+            INSERT INTO "sales" ("Order_ID", "Seller", "Buyer_Name","Buyer_NIPT","Article_Name", "Category", "Quantity",
                                  "Article_Price", "Total_Article_Price", "Datetime", "Seller Category")
             VALUES %s
         """, records)
