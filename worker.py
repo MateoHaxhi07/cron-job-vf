@@ -84,6 +84,9 @@ def create_driver():
     print(f"[{now()}] Starting Chrome...")
     opts = webdriver.ChromeOptions()
 
+    # Use Chromium from Debian package (not Google Chrome)
+    opts.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+
     prefs = {
         "download.default_directory": DOWNLOAD_FOLDER,
         "download.prompt_for_download": False,
@@ -101,7 +104,9 @@ def create_driver():
     opts.add_argument(f"--user-data-dir={user_data_dir}")
     opts.page_load_strategy = "eager"
 
-    driver = webdriver.Chrome(options=opts)
+    from selenium.webdriver.chrome.service import Service
+    service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
+    driver = webdriver.Chrome(service=service, options=opts)
     print(f"[{now()}] Chrome ready")
     return driver
 
